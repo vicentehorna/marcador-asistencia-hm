@@ -32,6 +32,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import threading
 import time
 from datetime import datetime
@@ -52,6 +53,8 @@ load_dotenv()
 
 # ── Constantes ────────────────────────────────────────────────────────
 PIN_MAX_LENGTH    = 4
+# Coincide con columna PC varchar(100) en SQL Server
+_DEVICE_NAME_MAX = 100
 API_BASE_URL      = os.getenv("API_BASE_URL", "http://179.61.14.224:8000").rstrip("/")
 API_URL           = f"{API_BASE_URL}/api/marcar-asistencia"
 API_VALIDATE_URL  = f"{API_BASE_URL}/api/validar-pin"
@@ -319,6 +322,7 @@ class KioskApp:
 
     def __init__(self, page: ft.Page):
         self.page = page
+        self.device_name = socket.gethostname()[:_DEVICE_NAME_MAX]
         self.pin: str = ""
         self._reset_task: asyncio.Task | None = None
         self._idle_task:  asyncio.Task | None = None   # temporizador de auto-apagado de cámara
@@ -330,7 +334,7 @@ class KioskApp:
         self._build_ui()
         asyncio.create_task(self._clock_task())
         asyncio.create_task(self._camera_update_task())
-        asyncio.create_task(self._sync_offline_marks())
+        asyncio.create_task(self._sync_offline_then_refresh())
 
     # ──────────────────────────────────────────────────
     # Modo offline — cola local y sincronización
@@ -368,6 +372,7 @@ class KioskApp:
                 "pin": pin,
                 "fecha_hora": timestamp,
                 "foto_local": filename,
+                "pc": self.device_name,
             }
             marcas_pendientes = self._load_pending_marks()
             marcas_pendientes.append(nueva_marca)
@@ -409,10 +414,15 @@ class KioskApp:
             try:
                 with open(foto_path, "rb") as f:
                     foto_bytes = f.read()
+                pc_envio = str(marca.get("pc") or self.device_name)[:_DEVICE_NAME_MAX]
                 resp = requests.post(
                     API_URL,
                     files={"foto": (foto_name, foto_bytes, "image/jpeg")},
-                    data={"pin": str(pin), "fecha_manual": str(fecha_hora)},
+                    data={
+                        "pin": str(pin),
+                        "fecha_manual": str(fecha_hora),
+                        "pc": pc_envio,
+                    },
                     timeout=API_TIMEOUT,
                 )
                 if resp.status_code == 200:
@@ -431,6 +441,33 @@ class KioskApp:
 
     async def _sync_offline_marks(self) -> None:
         await asyncio.to_thread(self._sync_offline_marks_worker)
+
+    async def _sync_offline_then_refresh(self) -> None:
+        await self._sync_offline_marks()
+        self._update_offline_counter()
+
+    def _update_offline_counter(self) -> None:
+        """Revisa el JSON y actualiza el contador en pantalla."""
+        if os.path.exists(OFFLINE_DATA_FILE):
+            try:
+                with open(OFFLINE_DATA_FILE, "r", encoding="utf-8") as f:
+                    pendientes = json.load(f)
+                if isinstance(pendientes, list):
+                    count = len(pendientes)
+                    if count > 0:
+                        self.lbl_offline_count.value = (
+                            f"⚠️ {count} marcas pendientes de sincronizar"
+                        )
+                        self.lbl_offline_count.visible = True
+                    else:
+                        self.lbl_offline_count.visible = False
+                else:
+                    self.lbl_offline_count.visible = False
+            except Exception:
+                self.lbl_offline_count.visible = False
+        else:
+            self.lbl_offline_count.visible = False
+        self.page.update()
 
     # ──────────────────────────────────────────────────
     # Configuración de la página
@@ -571,13 +608,26 @@ class KioskApp:
             value="", size=15, weight=ft.FontWeight.BOLD,
             text_align=ft.TextAlign.CENTER, visible=False,
         )
+        self.lbl_offline_count = ft.Text(
+            value="",
+            color=ft.Colors.ORANGE_700,
+            weight=ft.FontWeight.BOLD,
+            size=12,
+            text_align=ft.TextAlign.CENTER,
+            visible=False,
+        )
         feedback_area = ft.Container(
             content=ft.Column(
-                controls=[self._loading_ring, self.lbl_mensaje],
+                controls=[
+                    self._loading_ring,
+                    self.lbl_mensaje,
+                    self.lbl_offline_count,
+                ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=2,
             ),
-            height=44, alignment=ft.Alignment.CENTER,
+            padding=ft.Padding.symmetric(vertical=4),
+            alignment=ft.Alignment.CENTER,
         )
 
         # ── PIN Pad ──
@@ -889,12 +939,12 @@ class KioskApp:
     async def _call_api_async(
         self, pin: str, foto_bytes: bytes, foto_nombre: str, nombre_trabajador: str
     ) -> None:
-        """Multipart: {'foto': bytes_jpeg, 'pin': str}. Sin lectura de disco."""
+        """Multipart: foto + pin + pc (nombre del equipo). Sin lectura de disco."""
         def _do_post() -> requests.Response:
             return requests.post(
                 API_URL,
                 files={"foto": (foto_nombre, foto_bytes, "image/jpeg")},
-                data={"pin": pin},
+                data={"pin": pin, "pc": self.device_name},
                 timeout=API_TIMEOUT,
             )
         try:
@@ -906,7 +956,7 @@ class KioskApp:
                     )
                 else:
                     self._show_message("Ingreso registrado correctamente.", CLR_SUCCESS)
-                asyncio.create_task(self._sync_offline_marks())
+                asyncio.create_task(self._sync_offline_then_refresh())
             else:
                 try:
                     detalle = response.json().get("detail", "Error en el servidor.")
@@ -917,6 +967,7 @@ class KioskApp:
         except requests.exceptions.ConnectionError as exc:
             print(f"[ERROR] ConnectionError: {exc}")
             self._save_offline(pin, foto_bytes)
+            self._update_offline_counter()
             self._show_message(
                 "Sin conexión.\nMarca guardada localmente.",
                 CLR_WARNING,
@@ -924,6 +975,7 @@ class KioskApp:
         except requests.exceptions.Timeout as exc:
             print(f"[ERROR] Timeout: {exc}")
             self._save_offline(pin, foto_bytes)
+            self._update_offline_counter()
             self._show_message(
                 "Sin conexión.\nMarca guardada localmente.",
                 CLR_WARNING,

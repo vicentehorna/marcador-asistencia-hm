@@ -204,6 +204,11 @@ def marcar_asistencia(
         None,
         description="Opcional. Fecha/hora real del marcado (sync offline), formato YYYY-MM-DD HH:MM:SS.",
     ),
+    pc: str = Form(
+        "PC-Desconocida",
+        max_length=100,
+        description="Nombre del equipo/dispositivo desde el que se marca.",
+    ),
 ):
     """
     Recibe multipart/form-data con dos campos:
@@ -215,13 +220,16 @@ def marcar_asistencia(
       2. Si el PIN no existe → 404.
       3. Guarda la fotografía en `fotos_asistencia/` con nombre único.
       4. Inserta en `RegistroAsistencia` con Person, FechaHoraIngreso (ahora del marcado o fecha_manual),
-         rutafoto, xlastuser y xlastdate (GETDATE() al sincronizar).
+         rutafoto, PC (equipo origen), xlastuser y xlastdate (GETDATE() al sincronizar).
       5. Retorna datos del trabajador y ruta del archivo guardado.
 
     La foto se guarda SOLO si el PIN es válido, evitando acumular
     archivos de intentos fallidos.
     """
-    logger.info("Solicitud de marcado recibida para PIN: %s", pin)
+    pc_norm = (pc or "").strip() or "PC-Desconocida"
+    pc_norm = pc_norm[:100]
+
+    logger.info("Solicitud de marcado recibida para PIN: %s (PC=%s)", pin, pc_norm)
 
     # Fecha/hora del evento: offline respeta fecha_manual; online usa hora actual del servidor.
     ahora = datetime.now()
@@ -292,12 +300,12 @@ def marcar_asistencia(
             # Importante: en SQL guardamos SOLO el nombre del archivo.
             # Esto facilita que una Web lea la imagen luego sin depender de rutas absolutas.
             SQL_INSERTAR_ASISTENCIA = """
-                INSERT INTO RegistroAsistencia (IdTrabajador, Person, FechaHoraIngreso, rutafoto, xlastuser, xlastdate)
-                VALUES (?, ?, ?, ?, 'admin', GETDATE())
+                INSERT INTO RegistroAsistencia (IdTrabajador, Person, FechaHoraIngreso, rutafoto, PC, xlastuser, xlastdate)
+                VALUES (?, ?, ?, ?, ?, 'admin', GETDATE())
             """
             cursor.execute(
                 SQL_INSERTAR_ASISTENCIA,
-                (1, person_id, ahora, nombre_archivo),
+                (1, person_id, ahora, nombre_archivo, pc_norm),
             )
             conn.commit()
             logger.info(
