@@ -1,0 +1,23 @@
+# Entorno virtual y cachés Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Archivos sensibles / locales
+.env
+*.log
+
+# Artefactos de compilación
+build/
+dist/
+*.apk
+*.aab
+*.sha1
+
+# Datos locales de operación (no deben ir al APK)
+fotos_asistencia/
+assets/tmp/

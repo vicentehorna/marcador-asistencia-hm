@@ -1,0 +1,20 @@
+# Archivos de configuración sensible
+.env
+my-release-key.jks
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Carpetas de datos locales (App)
+offline_storage/
+
+# Carpetas de servidor (Fotos)
+FOTOS_ASISTENCIA/
+
+# Flet / Build
+build/
+dist/

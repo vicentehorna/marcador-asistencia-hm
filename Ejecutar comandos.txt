@@ -1,0 +1,12 @@
+python -m uvicorn api:app --host 0.0.0.0 --port 8001 --reload
+
+Remove-Item -Recurse -Force "C:\PROYECTOS\MARCADOR\build" -ErrorAction SilentlyContinue
+
+
+powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
+
+
+#para ejecutar la app
+cd C:\PROYECTOS\MARCADOR
+.\.venv\Scripts\Activate.ps1
+python main.py

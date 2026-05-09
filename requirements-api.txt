@@ -1,0 +1,15 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependencias del SERVIDOR FastAPI (PC / servidor Windows)
+# Usar con:  pip install -r requirements-api.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── API REST ───────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]       # Servidor ASGI para correr FastAPI
+python-multipart        # Requerido por FastAPI para Form y UploadFile
+
+# ── Base de datos ──────────────────────────────────────────────────────────
+pyodbc                  # Driver ODBC para conectarse a SQL Server
+
+# ── Configuración desde archivo .env ──────────────────────────────────────
+python-dotenv

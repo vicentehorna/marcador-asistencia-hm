@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependencias de la APP MÓVIL (tablet kiosco)
+# Usar para:  pip install -r requirements.txt
+# flet build apk lee este archivo automáticamente
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Interfaz de usuario ────────────────────────────────────────────────────
+flet
+
+# ── Peticiones HTTP a la API FastAPI ───────────────────────────────────────
+requests
+
+# ── Cámara embebida (OpenCV) ───────────────────────────────────────────────
+opencv-python
+
+# ── Configuración desde archivo .env ──────────────────────────────────────
+python-dotenv

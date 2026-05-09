@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pyproject.toml  — Configuración de build para Flet (APK Android)
+#
+# Comando de build:
+#   flet build apk --project MarcadorAsistencia --org com.tuempresa
+#
+# Los permisos declarados aquí se inyectan automáticamente en
+# AndroidManifest.xml. No es necesario agregarlos en el CLI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tool.flet]
+# Nombre visible de la app en el lanzador de Android
+product = "Control de Asistencia"
+description = "Kiosko de marcado de asistencia con cámara"
+
+# Permisos multiplataforma (cross-platform shorthand de Flet)
+# "camera"  → CAMERA en Android + NSCameraUsageDescription en iOS
+permissions = ["camera"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Permisos Android explícitos
+# Útil cuando el shorthand de Flet no incluye todos los permisos necesarios.
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.flet.android.permission]
+# Acceso a hardware de cámara (requerido por OpenCV VideoCapture)
+"android.permission.CAMERA" = true
+
+# Acceso a internet (para llamar a la API FastAPI)
+"android.permission.INTERNET" = true
+
+# Acceso al estado de la red (opcional, permite detectar si hay conectividad)
+"android.permission.ACCESS_NETWORK_STATE" = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Features de hardware Android
+# Declara que la cámara es REQUERIDA (android:required=true).
+# Cambia a false si quieres que la app también se instale en tablets sin cámara.
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.flet.android.feature]
+"android.hardware.camera" = true
+"android.hardware.camera.autofocus" = false   # opcional, no bloquea instalación
