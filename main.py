@@ -60,7 +60,6 @@ API_URL           = f"{API_BASE_URL}/api/marcar-asistencia"
 API_VALIDATE_URL  = f"{API_BASE_URL}/api/validar-pin"
 # Tiempos cortos para que, sin red o con servidor lento, el modo offline entre en ~1–2 s.
 API_TIMEOUT_CHECK = 1.5
-API_MARK_TIMEOUT = (2, 5)  # (conexión, lectura) para POST /marcar-asistencia
 API_TIMEOUT_SYNC = 20  # cola offline: puede ir por red débil; reintentos posteriores
 CAMERA_INDEX        = 1   # Predeterminado selfie (frontal); usar 0 si el dispositivo no expone índice 1
 CAMERA_FPS          = 12  # 12 fps es más que suficiente para una foto de asistencia; reduce CPU ~60 %
@@ -69,39 +68,24 @@ CAMERA_IDLE_TIMEOUT = 60  # Segundos sin interacción antes de apagar la cámara
 CAMERA_ROTATION     = os.getenv("CAMERA_ROTATION", "90ccw").strip().lower()
 CAMERA_MIRROR       = os.getenv("CAMERA_MIRROR", "false").strip().lower() in {"1", "true", "yes", "si"}
 
-# Directorio offline: en Android se intenta Documentos (visible en archivos) solo si hay
-# escritura real; si no (scoped storage sin permiso), se usa carpeta interna de la app.
-# Así el JSON y el contador funcionan igual en APK que en PC.
-_APP_DIR = os.path.dirname(os.path.abspath(__file__))
-_EXTERNAL_OFFLINE = "/storage/emulated/0/Documents/AsistenciaOffline"
-_INTERNAL_OFFLINE = os.path.join(_APP_DIR, "offline_storage")
-
-
-def _pick_offline_dir() -> str:
-    if os.path.isdir("/storage/emulated/0"):
+# Directorio offline: en POSIX (p. ej. Android/APK) se usa cwd/offline_storage con
+# respaldo a ruta bajo Android/data; en Windows, carpeta relativa offline_storage.
+def get_safe_path() -> str:
+    if os.name != "nt":
+        base = os.path.join(os.getcwd(), "offline_storage")
         try:
-            base = _EXTERNAL_OFFLINE
-            os.makedirs(os.path.join(base, "photos"), exist_ok=True)
-            probe = os.path.join(base, ".marcador_write_probe")
-            with open(probe, "w", encoding="utf-8") as pf:
-                pf.write("ok")
-            os.remove(probe)
+            if not os.path.exists(base):
+                os.makedirs(base, exist_ok=True)
             return base
         except OSError:
-            pass
-    return _INTERNAL_OFFLINE
+            return "/sdcard/Android/data/com.tuempresa.asistencia/files/offline"
+    return "offline_storage"
 
 
-OFFLINE_DIR = _pick_offline_dir()
+OFFLINE_DIR = get_safe_path()
 OFFLINE_PHOTOS = os.path.join(OFFLINE_DIR, "photos")
 OFFLINE_DATA_FILE = os.path.join(OFFLINE_DIR, "pending_marks.json")
-try:
-    os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
-except OSError:
-    OFFLINE_DIR = _INTERNAL_OFFLINE
-    OFFLINE_PHOTOS = os.path.join(OFFLINE_DIR, "photos")
-    OFFLINE_DATA_FILE = os.path.join(OFFLINE_DIR, "pending_marks.json")
-    os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
+os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
 
 print(f"[OFFLINE] Carpeta de cola: {OFFLINE_DIR}")
 
@@ -503,7 +487,7 @@ class KioskApp:
                             os.remove(foto_path)
                     except OSError:
                         pass
-                    print(f"[SYNC] PIN {pin} no existe en BD. Descartando marca offline.")
+                    print(f"[SYNC] PIN {pin} inválido. Descartado.")
                 else:
                     restantes.append(marca)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
@@ -1024,7 +1008,7 @@ class KioskApp:
                 API_URL,
                 files={"foto": (foto_nombre, foto_bytes, "image/jpeg")},
                 data={"pin": pin, "pc": self.device_name},
-                timeout=API_MARK_TIMEOUT,
+                timeout=(2, 5),
             )
         try:
             response = await asyncio.to_thread(_do_post)
@@ -1043,20 +1027,14 @@ class KioskApp:
                     detalle = "Error en el servidor."
                 print(f"[ERROR] API {response.status_code}: {detalle}")
                 self._show_message(detalle, CLR_ERROR)
-        except requests.exceptions.ConnectionError as exc:
-            print(f"[ERROR] ConnectionError: {exc}")
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ) as exc:
+            print(f"[ERROR] Red no disponible (_call_api_async): {exc}")
             self._save_offline(pin, foto_bytes)
             self._show_message(
-                "Sin conexión.\nMarca guardada localmente.",
-                CLR_WARNING,
-            )
-            self._update_offline_counter()
-            asyncio.create_task(self._offline_counter_refresh_delayed())
-        except requests.exceptions.Timeout as exc:
-            print(f"[ERROR] Timeout: {exc}")
-            self._save_offline(pin, foto_bytes)
-            self._show_message(
-                "Sin conexión.\nMarca guardada localmente.",
+                "Sin conexión. Guardado localmente.",
                 CLR_WARNING,
             )
             self._update_offline_counter()
