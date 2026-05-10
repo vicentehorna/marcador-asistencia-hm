@@ -2,7 +2,7 @@
 # pyproject.toml  — Configuración de build para Flet (APK Android)
 #
 # Comando de build:
-#   flet build apk --project MarcadorAsistencia --org com.tuempresa
+#   flet build apk --project MarcadorAsistencia --org com.tuempresa --arch arm64-v8a --yes
 #
 # Los permisos declarados aquí se inyectan automáticamente en
 # AndroidManifest.xml. No es necesario agregarlos en el CLI.

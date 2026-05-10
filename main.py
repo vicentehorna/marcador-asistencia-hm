@@ -65,7 +65,8 @@ CAMERA_INDEX        = 1   # Predeterminado selfie (frontal); usar 0 si el dispos
 CAMERA_FPS          = 12  # 12 fps es más que suficiente para una foto de asistencia; reduce CPU ~60 %
 UI_FPS              = 10  # Velocidad de refresco del ft.Image en pantalla
 CAMERA_IDLE_TIMEOUT = 60  # Segundos sin interacción antes de apagar la cámara automáticamente
-CAMERA_ROTATION     = os.getenv("CAMERA_ROTATION", "90ccw").strip().lower()
+# Por defecto 0 (tablet / preview frontal); en móvil usar .env: CAMERA_ROTATION=90ccw
+CAMERA_ROTATION     = os.getenv("CAMERA_ROTATION", "0").strip().lower()
 CAMERA_MIRROR       = os.getenv("CAMERA_MIRROR", "false").strip().lower() in {"1", "true", "yes", "si"}
 
 # Directorio offline: en POSIX (p. ej. Android/APK) se usa cwd/offline_storage con
@@ -537,190 +538,301 @@ class KioskApp:
     # ──────────────────────────────────────────────────
     def _setup_page(self) -> None:
         p = self.page
-        p.title        = "Control de Asistencia"
-        p.bgcolor      = CLR_BG
-        p.padding      = 0
-        p.spacing      = 0
-        p.theme_mode   = ft.ThemeMode.DARK
-        p.window.width     = 480
-        p.window.height    = 900
-        p.window.resizable = False
+        p.title = "Control de Asistencia"
+        p.bgcolor = CLR_BG
+        p.padding = 0
+        p.spacing = 0
+        p.theme_mode = ft.ThemeMode.DARK
+
+        # Sin medidas fijas: la ventana puede redimensionarse (PC) y la tablet rotar.
+        # p.window.width     = 480
+        # p.window.height    = 900
+        # p.window.resizable = False
+
         p.fonts = {
             "RobotoMono": (
                 "https://fonts.gstatic.com/s/robotomono/v23/"
                 "L0xuDF4xlVMF-BfR8bXMIhJHg45mwgGEFl0_3vq_ROW4.woff2"
             )
         }
+        p.on_resize = self.on_page_resize
+
+    def on_page_resize(self, e) -> None:
+        """Redibuja la UI al cambiar tamaño u orientación (evita repaints si no cambia)."""
+        if getattr(self, "_ui_building", False):
+            return
+        key = (int(self.page.width or 0), int(self.page.height or 0))
+        if key == getattr(self, "_last_resize_layout_key", None):
+            return
+        self._build_ui()
 
     # ──────────────────────────────────────────────────
     # Construcción de la UI
     # ──────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        # ── Reloj ──
-        self.lbl_hora = ft.Text(
-            value="00:00:00", size=38, weight=ft.FontWeight.BOLD,
-            color=CLR_TEXT, font_family="RobotoMono",
-            text_align=ft.TextAlign.CENTER,
-        )
-        self.lbl_fecha = ft.Text(
-            value="", size=11, color=CLR_SUBTEXT,
-            text_align=ft.TextAlign.CENTER,
-            style=ft.TextStyle(letter_spacing=2),
-        )
+        self._ui_building = True
+        try:
+            self.page.controls.clear()
 
-        header = ft.Container(
-            content=ft.Column(
-                controls=[
-                    ft.Text(
-                        "CONTROL DE ASISTENCIA", size=10, color=CLR_SUBTEXT,
-                        weight=ft.FontWeight.W_500,
-                        text_align=ft.TextAlign.CENTER,
-                        style=ft.TextStyle(letter_spacing=3),
-                    ),
-                    ft.Container(height=2),
-                    self.lbl_hora, self.lbl_fecha,
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=2,
-            ),
-            padding=ft.Padding.symmetric(vertical=10, horizontal=16),
-            alignment=ft.Alignment.CENTER,
-        )
+            pw = self.page.width or 0
+            ph = self.page.height or 0
+            if pw <= 0 or ph <= 0:
+                try:
+                    if pw <= 0:
+                        pw = int(self.page.window.width or 0)
+                    if ph <= 0:
+                        ph = int(self.page.window.height or 0)
+                except (TypeError, ValueError, AttributeError):
+                    pw, ph = pw or 0, ph or 0
 
-        # ── Vista previa de cámara embebida ──
-        # Se actualiza en tiempo real por _camera_update_task.
-        # Si no hay cámara disponible muestra un placeholder.
-        placeholder_src = "data:image/jpeg;base64," + self._placeholder_base64()
-        self._camera_image = ft.Image(
-            src=placeholder_src,
-            width=260, height=160,
-            fit=ft.BoxFit.COVER,
-            border_radius=ft.BorderRadius(10, 10, 10, 10),
-        )
-        self._cam_status = ft.Text(
-            "",
-            size=12, color=CLR_ERROR,
-            text_align=ft.TextAlign.CENTER,
-            visible=False,   # se activa desde _camera_update_task si hay error
-        )
+            is_tablet = pw > 600
+            is_landscape = pw > ph
 
-        # Badge dinámico: dot + texto. Se actualiza desde _camera_update_task.
-        # Estados: CONECTANDO (amarillo) → EN VIVO (verde) → SIN SEÑAL (rojo)
-        self._badge_dot = ft.Container(
-            width=7, height=7,
-            bgcolor="#F59E0B",   # amarillo = conectando
-            border_radius=4,
-        )
-        self._badge_text = ft.Text(
-            "CONECTANDO", size=10, color=CLR_TEXT, weight=ft.FontWeight.BOLD,
-        )
-        self._cam_border = ft.Container(   # borde del contenedor, referencia para cambiar color
-            width=260, height=160,
-            border_radius=10,
-            border=ft.Border.all(2, "#F59E0B"),   # amarillo inicial
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            content=ft.Stack(
-                controls=[
-                    self._camera_image,
-                    ft.Container(
-                        content=ft.Row(
-                            controls=[self._badge_dot, self._badge_text],
-                            spacing=4,
-                        ),
-                        padding=ft.Padding.symmetric(horizontal=6, vertical=3),
-                        bgcolor="#A0000000",
-                        border_radius=ft.BorderRadius(0, 0, 0, 10),
-                        top=0, left=0,
-                    ),
-                ],
-            ),
-        )
-        camera_container = self._cam_border
+            if is_tablet:
+                ui_width = 450
+                cam_h = int(ui_width * 0.6)
+                pin_h, btn_h = 80, 70
+            else:
+                ui_width = 300
+                cam_h = int(ui_width * 0.6)
+                pin_h, btn_h = 72, 48
 
-        # ── Display PIN ──
-        self.lbl_pin = ft.Text(
-            value="", size=36, weight=ft.FontWeight.BOLD,
-            color=CLR_TEXT, text_align=ft.TextAlign.CENTER,
-            font_family="RobotoMono",
-        )
-        self.lbl_pin_hint = ft.Text(
-            "Ingrese su PIN", size=12, color=CLR_SUBTEXT,
-            text_align=ft.TextAlign.CENTER,
-            style=ft.TextStyle(letter_spacing=1),
-        )
-
-        pin_display = ft.Container(
-            content=ft.Column(
-                controls=[self.lbl_pin_hint, self.lbl_pin],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=1,
-            ),
-            width=260, height=72,
-            bgcolor=CLR_SURFACE, border_radius=14,
-            border=ft.Border.all(1, "#2D4060"),
-            alignment=ft.Alignment.CENTER,
-            padding=ft.Padding.symmetric(horizontal=20, vertical=6),
-        )
-
-        # ── Feedback ──
-        self._loading_ring = ft.ProgressRing(
-            width=26, height=26, stroke_width=3,
-            color=CLR_ACCENT, visible=False,
-        )
-        self.lbl_mensaje = ft.Text(
-            value="", size=15, weight=ft.FontWeight.BOLD,
-            text_align=ft.TextAlign.CENTER, visible=False,
-        )
-        self.lbl_offline_count = ft.Text(
-            value="",
-            color=ft.Colors.ORANGE_700,
-            weight=ft.FontWeight.BOLD,
-            size=12,
-            text_align=ft.TextAlign.CENTER,
-            visible=False,
-        )
-        feedback_area = ft.Container(
-            content=ft.Column(
-                controls=[
-                    self._loading_ring,
-                    self.lbl_mensaje,
-                    self.lbl_offline_count,
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=2,
-            ),
-            padding=ft.Padding.symmetric(vertical=4),
-            alignment=ft.Alignment.CENTER,
-        )
-
-        # ── PIN Pad ──
-        pad = self._build_pinpad()
-
-        self.page.add(
-            ft.Column(
-                controls=[
-                    header,
-                    ft.Divider(height=1, color="#1E3A5F"),
-                    ft.Container(height=4),
-                    camera_container,
-                    self._cam_status,
-                    ft.Container(height=4),
-                    pin_display,
-                    ft.Container(height=2),
-                    feedback_area,
-                    ft.Container(height=2),
-                    pad,
-                    ft.Container(height=4),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=0,
-                scroll=ft.ScrollMode.AUTO,
+            now = datetime.now()
+            # ── Reloj ──
+            self.lbl_hora = ft.Text(
+                value=now.strftime("%H:%M:%S"),
+                size=38,
+                weight=ft.FontWeight.BOLD,
+                color=CLR_TEXT,
+                font_family="RobotoMono",
+                text_align=ft.TextAlign.CENTER,
             )
-        )
+            self.lbl_fecha = ft.Text(
+                value=now.strftime("%A, %d de %B de %Y").upper(),
+                size=11,
+                color=CLR_SUBTEXT,
+                text_align=ft.TextAlign.CENTER,
+                style=ft.TextStyle(letter_spacing=2),
+            )
 
-    def _build_pinpad(self) -> ft.Container:
-        SIZE    = 62
-        SPACING = 8
+            header = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "CONTROL DE ASISTENCIA",
+                            size=10,
+                            color=CLR_SUBTEXT,
+                            weight=ft.FontWeight.W_500,
+                            text_align=ft.TextAlign.CENTER,
+                            style=ft.TextStyle(letter_spacing=3),
+                        ),
+                        ft.Container(height=2),
+                        self.lbl_hora,
+                        self.lbl_fecha,
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                padding=ft.Padding.symmetric(vertical=10, horizontal=16),
+                alignment=ft.Alignment.CENTER,
+            )
+
+            # ── Vista previa de cámara embebida ──
+            placeholder_src = "data:image/jpeg;base64," + self._placeholder_base64()
+            self._camera_image = ft.Image(
+                src=placeholder_src,
+                width=ui_width,
+                height=cam_h,
+                fit=ft.BoxFit.COVER,
+                border_radius=ft.BorderRadius(10, 10, 10, 10),
+            )
+            self._cam_status = ft.Text(
+                "",
+                size=12,
+                color=CLR_ERROR,
+                text_align=ft.TextAlign.CENTER,
+                visible=False,
+            )
+
+            self._badge_dot = ft.Container(
+                width=7,
+                height=7,
+                bgcolor="#64748B",
+                border_radius=4,
+            )
+            self._badge_text = ft.Text(
+                "INACTIVA",
+                size=10,
+                color=CLR_TEXT,
+                weight=ft.FontWeight.BOLD,
+            )
+            self._cam_border = ft.Container(
+                width=ui_width,
+                height=cam_h,
+                border_radius=10,
+                border=ft.Border.all(2, "#64748B"),
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                content=ft.Stack(
+                    controls=[
+                        self._camera_image,
+                        ft.Container(
+                            content=ft.Row(
+                                controls=[self._badge_dot, self._badge_text],
+                                spacing=4,
+                            ),
+                            padding=ft.Padding.symmetric(horizontal=6, vertical=3),
+                            bgcolor="#A0000000",
+                            border_radius=ft.BorderRadius(0, 0, 0, 10),
+                            top=0,
+                            left=0,
+                        ),
+                    ],
+                ),
+            )
+            camera_container = self._cam_border
+
+            # ── Display PIN ──
+            self.lbl_pin = ft.Text(
+                value="●" * len(self.pin),
+                size=36,
+                weight=ft.FontWeight.BOLD,
+                color=CLR_TEXT,
+                text_align=ft.TextAlign.CENTER,
+                font_family="RobotoMono",
+            )
+            self.lbl_pin_hint = ft.Text(
+                "Ingrese su PIN" if not self.pin else f"{len(self.pin)} / {PIN_MAX_LENGTH}",
+                size=12,
+                color=CLR_SUBTEXT,
+                text_align=ft.TextAlign.CENTER,
+                style=ft.TextStyle(letter_spacing=1),
+            )
+
+            pin_display = ft.Container(
+                content=ft.Column(
+                    controls=[self.lbl_pin_hint, self.lbl_pin],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=1,
+                ),
+                width=ui_width,
+                height=pin_h,
+                bgcolor=CLR_SURFACE,
+                border_radius=14,
+                border=ft.Border.all(1, "#2D4060"),
+                alignment=ft.Alignment.CENTER,
+                padding=ft.Padding.symmetric(horizontal=20, vertical=6),
+            )
+
+            # ── Feedback ──
+            self._loading_ring = ft.ProgressRing(
+                width=26,
+                height=26,
+                stroke_width=3,
+                color=CLR_ACCENT,
+                visible=False,
+            )
+            self.lbl_mensaje = ft.Text(
+                value="",
+                size=15,
+                weight=ft.FontWeight.BOLD,
+                text_align=ft.TextAlign.CENTER,
+                visible=False,
+            )
+            self.lbl_offline_count = ft.Text(
+                value="",
+                color=ft.Colors.ORANGE_700,
+                weight=ft.FontWeight.BOLD,
+                size=12,
+                text_align=ft.TextAlign.CENTER,
+                visible=False,
+            )
+            feedback_area = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        self._loading_ring,
+                        self.lbl_mensaje,
+                        self.lbl_offline_count,
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                padding=ft.Padding.symmetric(vertical=4),
+                alignment=ft.Alignment.CENTER,
+            )
+
+            pad = self._build_pinpad(ui_width, is_tablet, btn_h)
+
+            if is_landscape and is_tablet:
+                col_izq = ft.Column(
+                    controls=[
+                        header,
+                        ft.Divider(height=1, color="#1E3A5F"),
+                        ft.Container(height=10),
+                        camera_container,
+                        self._cam_status,
+                        ft.Container(height=10),
+                        feedback_area,
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+                col_der = ft.Column(
+                    controls=[
+                        pin_display,
+                        ft.Container(height=15),
+                        pad,
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+                layout = ft.Row(
+                    controls=[col_izq, col_der],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=50,
+                )
+                self.page.add(
+                    ft.Container(
+                        content=layout,
+                        alignment=ft.Alignment.CENTER,
+                        expand=True,
+                        padding=ft.Padding.symmetric(vertical=20),
+                    )
+                )
+            else:
+                self.page.add(
+                    ft.Column(
+                        controls=[
+                            header,
+                            ft.Divider(height=1, color="#1E3A5F"),
+                            ft.Container(height=4),
+                            camera_container,
+                            self._cam_status,
+                            ft.Container(height=4),
+                            pin_display,
+                            ft.Container(height=2),
+                            feedback_area,
+                            ft.Container(height=2),
+                            pad,
+                            ft.Container(height=4),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                        scroll=ft.ScrollMode.AUTO,
+                    )
+                )
+
+            self._last_resize_layout_key = (
+                int(self.page.width or 0),
+                int(self.page.height or 0),
+            )
+            self._update_offline_counter()
+        finally:
+            self._ui_building = False
+
+    def _build_pinpad(
+        self, ui_width: int, is_tablet: bool, btn_h: int
+    ) -> ft.Container:
+        SIZE    = 90 if is_tablet else 62
+        SPACING = 12 if is_tablet else 8
 
         def num_btn(label: str) -> ft.Container:
             return ft.Container(
@@ -784,7 +896,8 @@ class KioskApp:
                 controls=[self._btn_icon, self._btn_spinner, self._btn_label],
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
-            width=280, height=48,
+            width=ui_width + 20,
+            height=btn_h,
             bgcolor=CLR_ENTER, border_radius=14,
             alignment=ft.Alignment.CENTER,
             on_click=lambda e: asyncio.create_task(self._on_enter()),
@@ -804,7 +917,8 @@ class KioskApp:
             ),
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
             bgcolor=CLR_SURFACE, border_radius=18,
-            border=ft.Border.all(1, "#2D4060"), width=300,
+            border=ft.Border.all(1, "#2D4060"),
+            width=ui_width + 40,
         )
 
     # ──────────────────────────────────────────────────
@@ -1093,7 +1207,7 @@ class KioskApp:
 
     @staticmethod
     def _placeholder_base64() -> str:
-        """Frame negro 260×160 como placeholder mientras carga la cámara."""
+        """Frame negro JPEG como placeholder mientras carga la cámara (tamaño interno fijo)."""
         import numpy as np
         img = np.zeros((160, 260, 3), dtype="uint8")
         _, buf = cv2.imencode(".jpg", img)

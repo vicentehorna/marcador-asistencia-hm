@@ -68,7 +68,9 @@ Write-Host "      Carpeta build (y cachés) eliminadas antes de flet build." -Fo
 # 4. Ejecutar Compilacion
 Write-Host "[4/5] Ejecutando Flet Build (Esto tomara tiempo)..." -ForegroundColor Cyan
 Set-Location $PROJECT_DIR
-& flet build apk --project MarcadorAsistencia --org com.tuempresa --yes
+# --arch arm64-v8a: un solo ABI (APK mucho más liviano; sin esto suele ser "fat" ~40–50 % más pesado).
+# Tablets/teléfonos Android actuales = ARM64. Muy antiguos solo armeabi-v7a: usar --arch armeabi-v7a.
+& flet build apk --project MarcadorAsistencia --org com.tuempresa --arch arm64-v8a --yes
 
 # 5. Localizar y Copiar el APK (Búsqueda Agresiva)
 Write-Host "[5/5] Buscando el archivo APK generado..." -ForegroundColor Yellow
