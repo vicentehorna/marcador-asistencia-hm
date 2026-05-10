@@ -31,6 +31,11 @@ permissions = ["camera"]
 # Acceso al estado de la red (opcional, permite detectar si hay conectividad)
 "android.permission.ACCESS_NETWORK_STATE" = true
 
+# Cola offline en Documentos / almacenamiento compartido (mejor soporte en tablets kiosco).
+# En API recientes el acceso completo puede seguir limitado sin permisos extra del fabricante.
+"android.permission.READ_EXTERNAL_STORAGE" = true
+"android.permission.WRITE_EXTERNAL_STORAGE" = true
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Features de hardware Android
 # Declara que la cámara es REQUERIDA (android:required=true).

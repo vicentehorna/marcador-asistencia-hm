@@ -58,8 +58,10 @@ _DEVICE_NAME_MAX = 100
 API_BASE_URL      = os.getenv("API_BASE_URL", "http://179.61.14.224:8000").rstrip("/")
 API_URL           = f"{API_BASE_URL}/api/marcar-asistencia"
 API_VALIDATE_URL  = f"{API_BASE_URL}/api/validar-pin"
-API_TIMEOUT_CHECK = 5
-API_TIMEOUT       = 20
+# Tiempos cortos para que, sin red o con servidor lento, el modo offline entre en ~1–2 s.
+API_TIMEOUT_CHECK = 1.5
+API_MARK_TIMEOUT = (2, 5)  # (conexión, lectura) para POST /marcar-asistencia
+API_TIMEOUT_SYNC = 20  # cola offline: puede ir por red débil; reintentos posteriores
 CAMERA_INDEX        = 1   # Predeterminado selfie (frontal); usar 0 si el dispositivo no expone índice 1
 CAMERA_FPS          = 12  # 12 fps es más que suficiente para una foto de asistencia; reduce CPU ~60 %
 UI_FPS              = 10  # Velocidad de refresco del ft.Image en pantalla
@@ -67,12 +69,41 @@ CAMERA_IDLE_TIMEOUT = 60  # Segundos sin interacción antes de apagar la cámara
 CAMERA_ROTATION     = os.getenv("CAMERA_ROTATION", "90ccw").strip().lower()
 CAMERA_MIRROR       = os.getenv("CAMERA_MIRROR", "false").strip().lower() in {"1", "true", "yes", "si"}
 
-# Directorio para marcas offline (ruta junto al script para APK y escritorio)
+# Directorio offline: en Android se intenta Documentos (visible en archivos) solo si hay
+# escritura real; si no (scoped storage sin permiso), se usa carpeta interna de la app.
+# Así el JSON y el contador funcionan igual en APK que en PC.
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-OFFLINE_DIR = os.path.join(_APP_DIR, "offline_storage")
+_EXTERNAL_OFFLINE = "/storage/emulated/0/Documents/AsistenciaOffline"
+_INTERNAL_OFFLINE = os.path.join(_APP_DIR, "offline_storage")
+
+
+def _pick_offline_dir() -> str:
+    if os.path.isdir("/storage/emulated/0"):
+        try:
+            base = _EXTERNAL_OFFLINE
+            os.makedirs(os.path.join(base, "photos"), exist_ok=True)
+            probe = os.path.join(base, ".marcador_write_probe")
+            with open(probe, "w", encoding="utf-8") as pf:
+                pf.write("ok")
+            os.remove(probe)
+            return base
+        except OSError:
+            pass
+    return _INTERNAL_OFFLINE
+
+
+OFFLINE_DIR = _pick_offline_dir()
 OFFLINE_PHOTOS = os.path.join(OFFLINE_DIR, "photos")
 OFFLINE_DATA_FILE = os.path.join(OFFLINE_DIR, "pending_marks.json")
-os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
+try:
+    os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
+except OSError:
+    OFFLINE_DIR = _INTERNAL_OFFLINE
+    OFFLINE_PHOTOS = os.path.join(OFFLINE_DIR, "photos")
+    OFFLINE_DATA_FILE = os.path.join(OFFLINE_DIR, "pending_marks.json")
+    os.makedirs(OFFLINE_PHOTOS, exist_ok=True)
+
+print(f"[OFFLINE] Carpeta de cola: {OFFLINE_DIR}")
 
 _OFFLINE_FILE_LOCK = threading.RLock()
 
@@ -357,6 +388,32 @@ class KioskApp:
             with open(OFFLINE_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(marcas, f, indent=4, ensure_ascii=False)
 
+    def _merge_pending_after_sync(self, restantes: list, snapshot_fotos: frozenset[str]) -> None:
+        """
+        Evita pisar marcas guardadas mientras corría la sync: conserva entradas nuevas
+        cuyo foto_local no estaba en el snapshot inicial.
+        """
+        os.makedirs(OFFLINE_DIR, exist_ok=True)
+        with _OFFLINE_FILE_LOCK:
+            current: list = []
+            if os.path.exists(OFFLINE_DATA_FILE):
+                try:
+                    with open(OFFLINE_DATA_FILE, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    current = data if isinstance(data, list) else []
+                except (json.JSONDecodeError, OSError):
+                    current = []
+            nuevos = [
+                m
+                for m in current
+                if isinstance(m, dict)
+                and m.get("foto_local")
+                and m["foto_local"] not in snapshot_fotos
+            ]
+            merged = restantes + nuevos
+            with open(OFFLINE_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(merged, f, indent=4, ensure_ascii=False)
+
     def _save_offline(self, pin: str, photo_bytes: bytes) -> None:
         """Guarda la marca y la foto en el almacenamiento local."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -395,6 +452,12 @@ class KioskApp:
         if not isinstance(pendientes, list) or not pendientes:
             return
 
+        snapshot_fotos = frozenset(
+            m["foto_local"]
+            for m in pendientes
+            if isinstance(m, dict) and m.get("foto_local")
+        )
+
         print(f"[SYNC] Intentando subir {len(pendientes)} marcas pendientes...")
         restantes: list = []
 
@@ -414,7 +477,9 @@ class KioskApp:
             try:
                 with open(foto_path, "rb") as f:
                     foto_bytes = f.read()
-                pc_envio = str(marca.get("pc") or self.device_name)[:_DEVICE_NAME_MAX]
+                pc_envio = str(
+                    marca.get("pc") or self.device_name or "Tablet-Android"
+                )[:_DEVICE_NAME_MAX]
                 resp = requests.post(
                     API_URL,
                     files={"foto": (foto_name, foto_bytes, "image/jpeg")},
@@ -423,13 +488,22 @@ class KioskApp:
                         "fecha_manual": str(fecha_hora),
                         "pc": pc_envio,
                     },
-                    timeout=API_TIMEOUT,
+                    timeout=API_TIMEOUT_SYNC,
                 )
                 if resp.status_code == 200:
                     try:
                         os.remove(foto_path)
                     except OSError:
                         pass
+                    print(f"[SYNC] Sincronizado PIN {pin}")
+                elif resp.status_code == 404:
+                    # PIN inválido: no reintentar; libera la cola y el disco.
+                    try:
+                        if os.path.exists(foto_path):
+                            os.remove(foto_path)
+                    except OSError:
+                        pass
+                    print(f"[SYNC] PIN {pin} no existe en BD. Descartando marca offline.")
                 else:
                     restantes.append(marca)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
@@ -437,13 +511,18 @@ class KioskApp:
             except OSError:
                 restantes.append(marca)
 
-        self._save_pending_marks(restantes)
+        self._merge_pending_after_sync(restantes, snapshot_fotos)
 
     async def _sync_offline_marks(self) -> None:
         await asyncio.to_thread(self._sync_offline_marks_worker)
 
     async def _sync_offline_then_refresh(self) -> None:
         await self._sync_offline_marks()
+        self._update_offline_counter()
+
+    async def _offline_counter_refresh_delayed(self) -> None:
+        """En Android el FS a veces retrasa la lectura del JSON tras guardar; un segundo paint ayuda."""
+        await asyncio.sleep(0.25)
         self._update_offline_counter()
 
     def _update_offline_counter(self) -> None:
@@ -945,7 +1024,7 @@ class KioskApp:
                 API_URL,
                 files={"foto": (foto_nombre, foto_bytes, "image/jpeg")},
                 data={"pin": pin, "pc": self.device_name},
-                timeout=API_TIMEOUT,
+                timeout=API_MARK_TIMEOUT,
             )
         try:
             response = await asyncio.to_thread(_do_post)
@@ -967,19 +1046,21 @@ class KioskApp:
         except requests.exceptions.ConnectionError as exc:
             print(f"[ERROR] ConnectionError: {exc}")
             self._save_offline(pin, foto_bytes)
-            self._update_offline_counter()
             self._show_message(
                 "Sin conexión.\nMarca guardada localmente.",
                 CLR_WARNING,
             )
+            self._update_offline_counter()
+            asyncio.create_task(self._offline_counter_refresh_delayed())
         except requests.exceptions.Timeout as exc:
             print(f"[ERROR] Timeout: {exc}")
             self._save_offline(pin, foto_bytes)
-            self._update_offline_counter()
             self._show_message(
                 "Sin conexión.\nMarca guardada localmente.",
                 CLR_WARNING,
             )
+            self._update_offline_counter()
+            asyncio.create_task(self._offline_counter_refresh_delayed())
         except Exception as exc:
             print(f"[ERROR] _call_api_async inesperado: {exc}")
             self._show_message("Error inesperado.\nContacte al administrador.", CLR_ERROR)
@@ -1030,7 +1111,7 @@ class KioskApp:
         self.lbl_pin_hint.value    = "Ingrese su PIN"
         self.lbl_mensaje.visible   = False
         self._loading_ring.visible = False
-        self.page.update()
+        self._update_offline_counter()
 
     @staticmethod
     def _placeholder_base64() -> str:
