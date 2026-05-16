@@ -10,3 +10,40 @@ powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
 cd C:\PROYECTOS\MARCADOR
 .\.venv\Scripts\Activate.ps1
 python main.py
+
+
+cd C:\PROYECTOS\MARCADOR_APP
+
+# Venv del proyecto original (aquí está Flet y las dependencias)
+& C:\PROYECTOS\MARCADOR\.venv\Scripts\Activate.ps1
+
+# Sincroniza assets (success.mp3, iconos, splash, etc.) desde el proyecto original.
+# Si no lo haces, faltarán recursos en el APK aunque la compilación tenga éxito.
+Copy-Item -Recurse -Force C:\PROYECTOS\MARCADOR\assets C:\PROYECTOS\MARCADOR_APP\
+
+# Limpieza recomendada antes del build
+Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\dist -ErrorAction SilentlyContinue
+Get-ChildItem . -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+# ─── Compilación del APK ──────────────────────────────────────────────
+# OPCIÓN A (RECOMENDADA): usa el script build-apk.ps1
+# Limpia caches, aplica android-disable-lint.init.gradle (evita el error
+# "lintVitalAnalyzeRelease" por bloqueo de .jar en Windows) y copia el APK.
+powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
+
+# OPCIÓN B (manual): solo si NO quieres usar build-apk.ps1.
+# IMPORTANTE:
+#  - El flag "-I android-disable-lint.init.gradle" es obligatorio para evitar
+#    el fallo de :file_picker:lintVitalAnalyzeRelease en Windows.
+#  - NO uses "--" como separador: Flet 0.85+ lo rechaza con
+#    "unrecognized arguments: -- -I ...". Pasa los valores directos.
+# APK más liviano: una sola ABI (ARM64). Teléfonos y tablets actuales suelen ser ARM64.
+# flet build apk --project MarcadorAsistencia --org com.tuempresa --arch arm64-v8a --yes `
+#     --flutter-build-args "-I" ".\android-disable-lint.init.gradle"
+
+
+#ULTIMO LUEGO DE REINCIIAR
+cd C:\PROYECTOS\MARCADOR_APP
+powershell -ExecutionPolicy Bypass -File .\build-apk.ps1

@@ -17,6 +17,13 @@ description = "Kiosko de marcado de asistencia con cámara"
 # "camera"  → CAMERA en Android + NSCameraUsageDescription en iOS
 permissions = ["camera"]
 
+# OpenCV (opencv-python) necesita .py del wheel (p. ej. cv2/config.py). Compilar site-packages
+# rompe el import en APK (Flet issue #4850).
+[tool.flet.compile]
+app = true
+packages = false
+cleanup = true
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Permisos Android explícitos
 # Útil cuando el shorthand de Flet no incluye todos los permisos necesarios.

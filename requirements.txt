@@ -11,6 +11,7 @@ flet
 requests
 
 # ── Cámara embebida (OpenCV) ───────────────────────────────────────────────
+# En APK no usar flet --compile-packages/--cleanup-packages (cv2 necesita config.py en el wheel).
 opencv-python
 
 # ── Configuración desde archivo .env ──────────────────────────────────────

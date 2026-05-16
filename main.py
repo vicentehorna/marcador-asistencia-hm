@@ -32,6 +32,7 @@ import asyncio
 import base64
 import json
 import os
+import platform
 import socket
 import threading
 import time
@@ -61,13 +62,94 @@ API_VALIDATE_URL  = f"{API_BASE_URL}/api/validar-pin"
 # Tiempos cortos para que, sin red o con servidor lento, el modo offline entre en ~1–2 s.
 API_TIMEOUT_CHECK = 1.5
 API_TIMEOUT_SYNC = 20  # cola offline: puede ir por red débil; reintentos posteriores
-CAMERA_INDEX        = 1   # Predeterminado selfie (frontal); usar 0 si el dispositivo no expone índice 1
+# Windows: casi siempre la webcam es índice 0. Android/tablet frontal suele ser 1.
+# Sobrescribe en .env: CAMERA_INDEX=0 o CAMERA_INDEX=1
+def _camera_index_default() -> int:
+    raw = os.getenv("CAMERA_INDEX")
+    if raw is None or str(raw).strip() == "":
+        return 0 if os.name == "nt" else 1
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return 0 if os.name == "nt" else 1
+
+
+CAMERA_INDEX = _camera_index_default()
 CAMERA_FPS          = 12  # 12 fps es más que suficiente para una foto de asistencia; reduce CPU ~60 %
 UI_FPS              = 10  # Velocidad de refresco del ft.Image en pantalla
 CAMERA_IDLE_TIMEOUT = 60  # Segundos sin interacción antes de apagar la cámara automáticamente
-# Por defecto 0 (tablet / preview frontal); en móvil usar .env: CAMERA_ROTATION=90ccw
-CAMERA_ROTATION     = os.getenv("CAMERA_ROTATION", "0").strip().lower()
+
+
+def _is_android_runtime() -> bool:
+    """True cuando Python corre dentro de un APK / Android (no Windows desktop)."""
+    if os.environ.get("ANDROID_ROOT") or os.environ.get("ANDROID_DATA"):
+        return True
+    if os.environ.get("PYTHON_ANDROID"):
+        return True
+    try:
+        rel = (platform.release() or "").lower()
+        if "android" in rel:
+            return True
+    except Exception:
+        pass
+    try:
+        uname = os.uname()
+        rel = str(getattr(uname, "release", "") or "").lower()
+        if "android" in rel:
+            return True
+    except (AttributeError, OSError):
+        pass
+    return False
+
+
+def _default_camera_rotation() -> str:
+    # En Android muchos teléfonos entregan buffer landscape (w>h) en app retrato → 'auto' corrige solo ese caso.
+    # Tablet que ya entrega retrato (h>=w) no se rota. PC/tablet Windows: sin rotación por defecto.
+    return "auto" if _is_android_runtime() else "0"
+
+
+_raw_rot = os.getenv("CAMERA_ROTATION")
+if _raw_rot is None or str(_raw_rot).strip() == "":
+    CAMERA_ROTATION = _default_camera_rotation().strip().lower()
+else:
+    CAMERA_ROTATION = str(_raw_rot).strip().lower()
 CAMERA_MIRROR       = os.getenv("CAMERA_MIRROR", "false").strip().lower() in {"1", "true", "yes", "si"}
+
+# Rotación "auto" en Android: se deriva del tamaño lógico de ventana (Flet).
+_ANDROID_AUTO_ROT_VALUE = "90ccw"
+_CAMERA_ANDROID_AUTO_LOCK = threading.Lock()
+
+
+def _android_tablet_min_short_side() -> int:
+    raw = os.getenv("CAMERA_ANDROID_TABLET_MIN_SHORT")
+    if raw is None or str(raw).strip() == "":
+        return 580
+    try:
+        return max(400, int(str(raw).strip()))
+    except ValueError:
+        return 580
+
+
+def update_android_camera_auto_form_factor(window_w: int, window_h: int) -> None:
+    global _ANDROID_AUTO_ROT_VALUE
+    if not _is_android_runtime():
+        return
+    try:
+        w, h = int(window_w), int(window_h)
+    except (TypeError, ValueError):
+        return
+
+    # Detectamos si es Tablet o Móvil
+    short_side = min(w, h)
+    is_tablet = short_side >= _android_tablet_min_short_side()
+
+    with _CAMERA_ANDROID_AUTO_LOCK:
+        if is_tablet:
+            # En Tablets horizontales como la Redmi, el sensor ya está derecho.
+            _ANDROID_AUTO_ROT_VALUE = "none"
+        else:
+            # En móviles, el sensor está de lado y necesita giro.
+            _ANDROID_AUTO_ROT_VALUE = "90ccw"
 
 # Directorio offline: en POSIX (p. ej. Android/APK) se usa cwd/offline_storage con
 # respaldo a ruta bajo Android/data; en Windows, carpeta relativa offline_storage.
@@ -103,6 +185,7 @@ CLR_SUBTEXT = "#94A3B8"
 CLR_DEL     = "#374151"
 CLR_ENTER   = "#16A34A"
 CLR_WARNING = "#EA580C"
+CLR_REJECT  = "#FF2222"   # rechazo biométrico (rojo brillante)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -282,8 +365,32 @@ class CameraStream:
                     # 1. Recuperar Color
                     frame = self._ensure_bgr(frame)
 
-                    # 2. Rotación
-                    if CAMERA_ROTATION == "90ccw":
+                    # 2. Rotación según plataforma
+                    if _is_android_runtime():
+                        rot_mode = CAMERA_ROTATION
+                        # El mismo .env suele tener CAMERA_ROTATION=none para Windows (sin girar).
+                        # En Android OpenCV suele entregar buffer landscape en pantalla retrato → imagen torcida.
+                        # Forzar "auto" aquí mantiene tablet sin giro y smartphone con 90ccw vía update_android_*.
+                        if rot_mode in ("none", "0"):
+                            rot_mode = "auto"
+                        if rot_mode == "auto":
+                            with _CAMERA_ANDROID_AUTO_LOCK:
+                                actual_rot = _ANDROID_AUTO_ROT_VALUE
+
+                            if actual_rot == "90cw":
+                                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                            elif actual_rot == "90ccw":
+                                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                            elif actual_rot == "180":
+                                frame = cv2.rotate(frame, cv2.ROTATE_180)
+                            # Si es "none", se deja el frame original.
+                        elif rot_mode == "90ccw":
+                            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                        elif rot_mode == "90cw":
+                            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                        elif rot_mode == "180":
+                            frame = cv2.rotate(frame, cv2.ROTATE_180)
+                    elif CAMERA_ROTATION == "90ccw":
                         frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
                     elif CAMERA_ROTATION == "90cw":
                         frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -342,6 +449,7 @@ class KioskApp:
         self.pin: str = ""
         self._reset_task: asyncio.Task | None = None
         self._idle_task:  asyncio.Task | None = None   # temporizador de auto-apagado de cámara
+        self._input_locked = False  # bloqueo temporal del teclado (rechazo biométrico)
 
         # La cámara se crea pero NO se inicia hasta el primer toque del teclado
         self._camera = CameraStream(camera_index=CAMERA_INDEX, fps=CAMERA_FPS)
@@ -638,13 +746,13 @@ class KioskApp:
             )
 
             # ── Vista previa de cámara embebida ──
-            placeholder_src = "data:image/jpeg;base64," + self._placeholder_base64()
             self._camera_image = ft.Image(
-                src=placeholder_src,
+                src="data:image/jpeg;base64," + self._placeholder_base64(),
                 width=ui_width,
                 height=cam_h,
                 fit=ft.BoxFit.COVER,
                 border_radius=ft.BorderRadius(10, 10, 10, 10),
+                gapless_playback=True,
             )
             self._cam_status = ft.Text(
                 "",
@@ -723,17 +831,18 @@ class KioskApp:
                 padding=ft.Padding.symmetric(horizontal=20, vertical=6),
             )
 
-            # ── Feedback ──
+            # ── Feedback (mensajes de confirmación) ──
+            fuente_mensaje = 26 if is_tablet else 16
             self._loading_ring = ft.ProgressRing(
-                width=26,
-                height=26,
+                width=30,
+                height=30,
                 stroke_width=3,
                 color=CLR_ACCENT,
                 visible=False,
             )
             self.lbl_mensaje = ft.Text(
                 value="",
-                size=15,
+                size=fuente_mensaje,
                 weight=ft.FontWeight.BOLD,
                 text_align=ft.TextAlign.CENTER,
                 visible=False,
@@ -754,10 +863,11 @@ class KioskApp:
                         self.lbl_offline_count,
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=2,
+                    spacing=10,
                 ),
-                padding=ft.Padding.symmetric(vertical=4),
+                padding=ft.Padding.symmetric(vertical=15),
                 alignment=ft.Alignment.CENTER,
+                width=ui_width,
             )
 
             pad = self._build_pinpad(ui_width, is_tablet, btn_h)
@@ -824,6 +934,7 @@ class KioskApp:
                 int(self.page.width or 0),
                 int(self.page.height or 0),
             )
+            update_android_camera_auto_form_factor(pw, ph)
             self._update_offline_counter()
         finally:
             self._ui_building = False
@@ -964,6 +1075,11 @@ class KioskApp:
         """
         Refresca ft.Image con el último frame y gestiona el badge de estado.
 
+        Optimización anti-parpadeo:
+        - Los frames actualizan SOLO self._camera_image.update() (sin re-layout).
+        - El badge se actualiza por separado SOLO cuando cambia el estado.
+        - Nunca se llama self.page.update() desde este loop.
+
         Estados del badge
         -----------------
         INACTIVA   (gris)    → cámara apagada por inactividad o aún no despertada
@@ -972,10 +1088,12 @@ class KioskApp:
         SIN SEÑAL  (rojo)    → error de hardware / desconexión
         """
         interval    = 1.0 / UI_FPS
-        _last_state = "idle"   # estado inicial: cámara no arrancada
+        _last_state = "idle"
 
         while True:
-            # Determinar estado actual
+            await asyncio.sleep(interval)
+
+            # ── Estado actual ──────────────────────────────────────────────
             if not self._camera.streaming:
                 state = "idle"
             elif self._camera.active:
@@ -985,13 +1103,14 @@ class KioskApp:
             else:
                 state = "connecting"
 
-            # Actualizar imagen sólo cuando la cámara está viva
+            # ── Frame: actualiza SOLO el control ft.Image (sin tocar el layout) ──
             if state in ("live", "connecting"):
                 b64 = self._camera.get_frame_base64()
                 if b64:
                     self._camera_image.src = "data:image/jpeg;base64," + b64
+                    self._camera_image.update()
 
-            # Actualizar badge sólo cuando cambia el estado (evita renders innecesarios)
+            # ── Badge: solo cuando cambia el estado ────────────────────────
             if state != _last_state:
                 _last_state = state
                 if state == "live":
@@ -1009,23 +1128,26 @@ class KioskApp:
                     self._badge_text.value   = "CONECTANDO"
                     self._cam_border.border  = ft.Border.all(2, "#F59E0B")
                 else:  # idle
-                    self._badge_dot.bgcolor  = "#64748B"   # gris
+                    self._badge_dot.bgcolor  = "#64748B"
                     self._badge_text.value   = "INACTIVA"
                     self._cam_border.border  = ft.Border.all(2, "#64748B")
-
-            self.page.update()
-            await asyncio.sleep(interval)
+                # Solo en cambio de estado actualizamos el contenedor (badge + borde)
+                self._cam_border.update()
 
     # ──────────────────────────────────────────────────
     # Handlers del PIN Pad
     # ──────────────────────────────────────────────────
     def _on_digit(self, digit: str) -> None:
+        if self._input_locked:
+            return
         self._wake_camera()   # activa la cámara al primer toque y reinicia el timer
         if len(self.pin) < PIN_MAX_LENGTH:
             self.pin += digit
             self._refresh_pin_display()
 
     def _on_backspace(self) -> None:
+        if self._input_locked:
+            return
         self._wake_camera()   # también cuenta como interacción
         if self.pin:
             self.pin = self.pin[:-1]
@@ -1040,6 +1162,8 @@ class KioskApp:
         Fase B: pre-validación del PIN contra la BD.
         Fase C: captura instantánea del frame actual de la cámara y envío.
         """
+        if self._input_locked:
+            return
         self._wake_camera()   # garantiza que la cámara esté activa al marcar
 
         # ── A) Validación local ──────────────────────────────────────────
@@ -1113,6 +1237,20 @@ class KioskApp:
     # ──────────────────────────────────────────────────
     # Envío a la API con PIN + foto
     # ──────────────────────────────────────────────────
+    @staticmethod
+    def _score_pct(match_score: float | None) -> str:
+        if match_score is None:
+            return ""
+        return f"{int(round(float(match_score) * 100))}%"
+
+    async def _handle_biometric_reject(self) -> None:
+        """Rechazo biométrico: bloquea teclado 3 s, mensaje rojo, reset sin tocar cola offline."""
+        self._set_input_locked(True)
+        self._show_message("ERROR: Acérquese a Recursos Humanos", CLR_REJECT)
+        await asyncio.sleep(3)
+        self._set_input_locked(False)
+        self._reset_state()
+
     async def _call_api_async(
         self, pin: str, foto_bytes: bytes, foto_nombre: str, nombre_trabajador: str
     ) -> None:
@@ -1124,16 +1262,60 @@ class KioskApp:
                 data={"pin": pin, "pc": self.device_name},
                 timeout=(2, 5),
             )
+
+        biometric_rejected = False
         try:
             response = await asyncio.to_thread(_do_post)
             if response.status_code == 200:
-                if (nombre_trabajador or "").strip():
-                    self._show_message(
-                        f"¡Hola {nombre_trabajador}!\nIngreso registrado.", CLR_SUCCESS
-                    )
+                data        = response.json()
+                nombre_t    = data.get("nombre_trabajador", nombre_trabajador or "").strip()
+                biometria   = data.get("biometria", "omitida")
+                match_score = data.get("match_score")
+                pct         = self._score_pct(match_score)
+                saludo      = f"¡Hola {nombre_t}!\n" if nombre_t else ""
+
+                if biometria == "enrolado":
+                    cuerpo = f"Ingreso registrado ✓ {pct}" if pct else "Ingreso registrado ✓"
+                    msg    = f"{saludo}{cuerpo}\nRostro registrado ✓"
+                    color  = CLR_SUCCESS
+                elif biometria in ("aprobado", "verificado"):
+                    cuerpo = f"Ingreso registrado ✓ {pct}" if pct else "Ingreso registrado ✓"
+                    msg    = f"{saludo}{cuerpo}"
+                    color  = CLR_SUCCESS
+                elif biometria == "observacion":
+                    cuerpo = f"Verificando identidad... {pct}" if pct else "Verificando identidad..."
+                    msg    = f"{saludo}{cuerpo}"
+                    color  = CLR_WARNING
+                elif biometria == "sin_rostro":
+                    msg   = f"{saludo}Ingreso registrado.\n(Foto sin rostro detectado)"
+                    color = CLR_SUCCESS
+                elif nombre_t:
+                    msg   = f"{saludo}Ingreso registrado."
+                    color = CLR_SUCCESS
                 else:
-                    self._show_message("Ingreso registrado correctamente.", CLR_SUCCESS)
+                    msg   = "Ingreso registrado correctamente."
+                    color = CLR_SUCCESS
+
+                self._show_message(msg, color)
                 asyncio.create_task(self._sync_offline_then_refresh())
+            elif response.status_code == 403:
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {}
+                if data.get("biometria") == "rechazado" or data.get("status") == "rejected":
+                    biometric_rejected = True
+                    print(
+                        f"[RECHAZO] Biometría score={data.get('match_score')} "
+                        f"Person={data.get('nombre_trabajador', '')}"
+                    )
+                    await self._handle_biometric_reject()
+                else:
+                    try:
+                        detalle = response.json().get("detail", "Acceso denegado.")
+                    except Exception:
+                        detalle = "Acceso denegado."
+                    self._show_message(str(detalle), CLR_ERROR)
             else:
                 try:
                     detalle = response.json().get("detail", "Error en el servidor.")
@@ -1159,7 +1341,8 @@ class KioskApp:
         finally:
             self._set_btn_loading(False)
             self._set_loading_ring(False)
-            self._reset_task = asyncio.create_task(self._auto_reset())
+            if not biometric_rejected:
+                self._reset_task = asyncio.create_task(self._auto_reset())
 
     async def _auto_reset(self) -> None:
         await asyncio.sleep(3)
@@ -1168,7 +1351,16 @@ class KioskApp:
     # ──────────────────────────────────────────────────
     # Helpers de UI
     # ──────────────────────────────────────────────────
+    def _set_input_locked(self, locked: bool) -> None:
+        """Bloquea teclado numérico y botón marcar (p. ej. tras rechazo biométrico)."""
+        self._input_locked = locked
+        if hasattr(self, "btn_marcar"):
+            self.btn_marcar.disabled = locked
+        self.page.update()
+
     def _set_btn_loading(self, loading: bool, label: str = "  MARCAR ASISTENCIA") -> None:
+        if self._input_locked:
+            return
         self.btn_marcar.disabled  = loading
         self.btn_marcar.opacity   = 0.6 if loading else 1.0
         self._btn_icon.visible    = not loading

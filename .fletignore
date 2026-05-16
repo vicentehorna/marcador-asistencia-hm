@@ -20,4 +20,11 @@ dist/
 
 # Datos locales de operación (no deben ir al APK)
 fotos_asistencia/
+offline_storage/
 assets/tmp/
+
+# Servidor FastAPI y firmas Android (no son parte de la app móvil)
+api.py
+requirements-api.txt
+*.jks
+*.keystore

@@ -1,0 +1,14 @@
+// Init script para Gradle (Flet / Flutter Android en Windows).
+// Desactiva tareas lintVital* en release para evitar fallos por bloqueo de .jar
+// en :file_picker:lintVitalAnalyzeRelease (antivirus / daemon / IDE).
+// Uso: flet build apk ... con build_args que incluyan:
+//   "--", "-I", "../../android-disable-lint.init.gradle"
+// (ruta relativa desde build/flutter, ver pyproject.toml).
+
+gradle.projectsEvaluated {
+    rootProject.allprojects { proj ->
+        proj.tasks.matching { it.name.contains("lintVital") }.configureEach { task ->
+            task.enabled = false
+        }
+    }
+}

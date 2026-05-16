@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependencias del SERVIDOR (api.py / FastAPI)
+#
+# IMPORTANTE — facenet-pytorch NO va en este archivo.
+# Si lo pones aquí, pip vuelve a pedir numpy 1.26.4 y en Windows sin Visual C++
+# intenta compilar desde fuente y falla.
+#
+# Orden correcto (con .venv activo):
+#
+#   1) python -m pip install --upgrade pip setuptools wheel
+#
+#   2) Numpy SOLO como wheel (sin compilador):
+#        pip install "numpy>=1.24" --only-binary=:all:
+#
+#   3) PyTorch CPU (si aún no está):
+#        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#
+#   4) FaceNet sin reinstalar numpy (evita el error del adjunto):
+#        pip install facenet-pytorch --no-deps
+#
+#   5) Resto de la API:
+#        pip install -r requirements-server.txt
+#
+# Si el paso 2 falla: usa Python 3.11 o 3.12 x64 para el venv (no 3.13 ni 32 bits).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── API Web ───────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ── Base de datos ─────────────────────────────────────────────────────────────
+pyodbc
+python-dotenv
+
+# ── Utilidades (biometría usa Pillow vía facenet; numpy ya instalado en paso 2) ─
+Pillow
