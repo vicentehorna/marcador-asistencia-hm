@@ -49,8 +49,14 @@ from dotenv import load_dotenv
 # La confirmación de éxito es solo visual (mensaje verde en lbl_mensaje).
 # numpy aparece solo dentro de _placeholder_base64 (lazy).
 
-# Cargar configuración opcional desde .env (misma carpeta del proyecto).
-load_dotenv()
+# Config: app.env se empaqueta en el APK; .env es solo PC/servidor (.fletignore).
+def _load_env_files() -> None:
+    root = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(root, "app.env"))
+    load_dotenv(os.path.join(root, ".env"), override=True)
+
+
+_load_env_files()
 
 # ── Constantes ────────────────────────────────────────────────────────
 PIN_MAX_LENGTH    = 4
@@ -59,9 +65,10 @@ _DEVICE_NAME_MAX = 100
 API_BASE_URL      = os.getenv("API_BASE_URL", "http://179.61.14.224:8000").rstrip("/")
 API_URL           = f"{API_BASE_URL}/api/marcar-asistencia"
 API_VALIDATE_URL  = f"{API_BASE_URL}/api/validar-pin"
-# Tiempos cortos para que, sin red o con servidor lento, el modo offline entre en ~1–2 s.
-API_TIMEOUT_CHECK = 1.5
-API_TIMEOUT_SYNC = 20  # cola offline: puede ir por red débil; reintentos posteriores
+# La API puede tardar al primer enrolamiento biométrico (FaceNet/modelos en CPU).
+API_TIMEOUT_CHECK = 8
+API_TIMEOUT_MARK = (5, 60)  # (conexión, lectura/procesamiento de foto + biometría)
+API_TIMEOUT_SYNC = 60  # cola offline: puede ir por red débil; reintentos posteriores
 # Windows: casi siempre la webcam es índice 0. Android/tablet frontal suele ser 1.
 # Sobrescribe en .env: CAMERA_INDEX=0 o CAMERA_INDEX=1
 def _camera_index_default() -> int:
@@ -174,18 +181,111 @@ print(f"[OFFLINE] Carpeta de cola: {OFFLINE_DIR}")
 
 _OFFLINE_FILE_LOCK = threading.RLock()
 
-# ── Paleta corporativa ────────────────────────────────────────────────
-CLR_BG      = "#0D1B2A"
-CLR_SURFACE = "#1B2D42"
-CLR_ACCENT  = "#2563EB"
-CLR_SUCCESS = "#16A34A"
-CLR_ERROR   = "#DC2626"
-CLR_TEXT    = "#F1F5F9"
-CLR_SUBTEXT = "#94A3B8"
-CLR_DEL     = "#374151"
-CLR_ENTER   = "#16A34A"
-CLR_WARNING = "#EA580C"
-CLR_REJECT  = "#FF2222"   # rechazo biométrico (rojo brillante)
+# ── Temas UI (selector en .env → UI_THEME) ───────────────────────────
+_UI_THEME_PRESETS: dict[str, dict[str, str]] = {
+  # Alternativa 1: Premium Tech Slate (oscuro moderno)
+    "premium_slate": {
+        "bg": "#0F172A",
+        "surface": "#1E293B",
+        "accent": "#06B6D4",
+        "success": "#10B981",
+        "error": "#F43F5E",
+        "text": "#F8FAFC",
+        "subtext": "#94A3B8",
+        "del": "#334155",
+        "enter": "#10B981",
+        "warning": "#F59E0B",
+        "reject": "#F43F5E",
+        "on_accent": "#F8FAFC",
+        "border": "#334155",
+        "badge": "#F8FAFC",
+        "cam_idle": "#475569",
+        "shadow_num": "#06B6D440",
+        "shadow_enter": "#10B98150",
+        "shadow_panel": "#00000000",
+        "flet_theme": "dark",
+    },
+    # Alternativa 2: Enterprise Clean (claro corporativo)
+    "enterprise_clean": {
+        "bg": "#F8F9FA",
+        "surface": "#FFFFFF",
+        "accent": "#2563EB",
+        "success": "#059669",
+        "error": "#DC2626",
+        "text": "#1E3A5F",
+        "subtext": "#64748B",
+        "del": "#64748B",
+        "enter": "#059669",
+        "warning": "#D97706",
+        "reject": "#DC2626",
+        "on_accent": "#FFFFFF",
+        "border": "#E2E8F0",
+        "badge": "#FFFFFF",
+        "cam_idle": "#94A3B8",
+        "shadow_num": "#2563EB30",
+        "shadow_enter": "#05966940",
+        "shadow_panel": "#00000012",
+        "flet_theme": "light",
+    },
+}
+
+_UI_THEME_ALIASES = {
+    "1": "premium_slate",
+    "slate": "premium_slate",
+    "premium": "premium_slate",
+    "dark": "premium_slate",
+    "oscuro": "premium_slate",
+    "2": "enterprise_clean",
+    "enterprise": "enterprise_clean",
+    "clean": "enterprise_clean",
+    "light": "enterprise_clean",
+    "claro": "enterprise_clean",
+}
+
+
+def _resolve_ui_theme_name(raw: str | None) -> str:
+    key = (raw or "premium_slate").strip().lower()
+    return _UI_THEME_ALIASES.get(key, key if key in _UI_THEME_PRESETS else "premium_slate")
+
+
+def _apply_ui_theme(theme_name: str) -> str:
+    """Carga la paleta en variables globales CLR_* usadas por toda la UI."""
+    preset = _UI_THEME_PRESETS[theme_name]
+    g = globals()
+    g["CLR_BG"] = preset["bg"]
+    g["CLR_SURFACE"] = preset["surface"]
+    g["CLR_ACCENT"] = preset["accent"]
+    g["CLR_SUCCESS"] = preset["success"]
+    g["CLR_ERROR"] = preset["error"]
+    g["CLR_TEXT"] = preset["text"]
+    g["CLR_SUBTEXT"] = preset["subtext"]
+    g["CLR_DEL"] = preset["del"]
+    g["CLR_ENTER"] = preset["enter"]
+    g["CLR_WARNING"] = preset["warning"]
+    g["CLR_REJECT"] = preset["reject"]
+    g["CLR_ON_ACCENT"] = preset["on_accent"]
+    g["CLR_BORDER"] = preset["border"]
+    g["CLR_BADGE"] = preset["badge"]
+    g["CLR_CAM_IDLE"] = preset["cam_idle"]
+    g["CLR_SHADOW_NUM"] = preset["shadow_num"]
+    g["CLR_SHADOW_ENTER"] = preset["shadow_enter"]
+    g["CLR_SHADOW_PANEL"] = preset["shadow_panel"]
+    g["UI_THEME_ACTIVE"] = theme_name
+    return preset["flet_theme"]
+
+
+UI_THEME_ACTIVE = "premium_slate"
+# Valores por defecto (se sobrescriben al cargar .env)
+CLR_BG = CLR_SURFACE = CLR_ACCENT = CLR_SUCCESS = CLR_ERROR = ""
+CLR_TEXT = CLR_SUBTEXT = CLR_DEL = CLR_ENTER = CLR_WARNING = CLR_REJECT = ""
+CLR_ON_ACCENT = CLR_BORDER = CLR_BADGE = CLR_CAM_IDLE = ""
+CLR_SHADOW_NUM = CLR_SHADOW_ENTER = CLR_SHADOW_PANEL = ""
+
+_flet_theme = _apply_ui_theme(_resolve_ui_theme_name(os.getenv("UI_THEME")))
+_PAGE_THEME_MODE = (
+    ft.ThemeMode.LIGHT if _flet_theme == "light" else ft.ThemeMode.DARK
+)
+print(f"[UI] Tema activo: {UI_THEME_ACTIVE} ({_flet_theme})")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -650,7 +750,7 @@ class KioskApp:
         p.bgcolor = CLR_BG
         p.padding = 0
         p.spacing = 0
-        p.theme_mode = ft.ThemeMode.DARK
+        p.theme_mode = _PAGE_THEME_MODE
 
         # Sin medidas fijas: la ventana puede redimensionarse (PC) y la tablet rotar.
         # p.window.width     = 480
@@ -765,20 +865,20 @@ class KioskApp:
             self._badge_dot = ft.Container(
                 width=7,
                 height=7,
-                bgcolor="#64748B",
+                bgcolor=CLR_CAM_IDLE,
                 border_radius=4,
             )
             self._badge_text = ft.Text(
                 "INACTIVA",
                 size=10,
-                color=CLR_TEXT,
+                color=CLR_BADGE,
                 weight=ft.FontWeight.BOLD,
             )
             self._cam_border = ft.Container(
                 width=ui_width,
                 height=cam_h,
                 border_radius=10,
-                border=ft.Border.all(2, "#64748B"),
+                border=ft.Border.all(2, CLR_BORDER),
                 clip_behavior=ft.ClipBehavior.HARD_EDGE,
                 content=ft.Stack(
                     controls=[
@@ -826,9 +926,13 @@ class KioskApp:
                 height=pin_h,
                 bgcolor=CLR_SURFACE,
                 border_radius=14,
-                border=ft.Border.all(1, "#2D4060"),
+                border=ft.Border.all(1, CLR_BORDER),
                 alignment=ft.Alignment.CENTER,
                 padding=ft.Padding.symmetric(horizontal=20, vertical=6),
+                shadow=ft.BoxShadow(
+                    spread_radius=0, blur_radius=8,
+                    color=CLR_SHADOW_PANEL, offset=ft.Offset(0, 2),
+                ) if CLR_SHADOW_PANEL != "#00000000" else None,
             )
 
             # ── Feedback (mensajes de confirmación) ──
@@ -876,7 +980,7 @@ class KioskApp:
                 col_izq = ft.Column(
                     controls=[
                         header,
-                        ft.Divider(height=1, color="#1E3A5F"),
+                        ft.Divider(height=1, color=CLR_BORDER),
                         ft.Container(height=10),
                         camera_container,
                         self._cam_status,
@@ -912,7 +1016,7 @@ class KioskApp:
                     ft.Column(
                         controls=[
                             header,
-                            ft.Divider(height=1, color="#1E3A5F"),
+                            ft.Divider(height=1, color=CLR_BORDER),
                             ft.Container(height=4),
                             camera_container,
                             self._cam_status,
@@ -949,7 +1053,7 @@ class KioskApp:
             return ft.Container(
                 content=ft.Text(
                     label, size=22, weight=ft.FontWeight.BOLD,
-                    color=CLR_TEXT, text_align=ft.TextAlign.CENTER,
+                    color=CLR_ON_ACCENT, text_align=ft.TextAlign.CENTER,
                 ),
                 width=SIZE, height=SIZE,
                 bgcolor=CLR_ACCENT, border_radius=12,
@@ -958,7 +1062,7 @@ class KioskApp:
                 ink=True,
                 shadow=ft.BoxShadow(
                     spread_radius=0, blur_radius=6,
-                    color="#1D4ED860", offset=ft.Offset(0, 3),
+                    color=CLR_SHADOW_NUM, offset=ft.Offset(0, 3),
                 ),
             )
 
@@ -967,7 +1071,7 @@ class KioskApp:
                 content=ft.Text(
                     label, size=12 if len(label) > 3 else 22,
                     weight=ft.FontWeight.BOLD,
-                    color=CLR_TEXT, text_align=ft.TextAlign.CENTER,
+                    color=CLR_ON_ACCENT, text_align=ft.TextAlign.CENTER,
                     max_lines=2, overflow=ft.TextOverflow.VISIBLE,
                 ),
                 width=SIZE, height=SIZE, bgcolor=color,
@@ -993,14 +1097,14 @@ class KioskApp:
             alignment=ft.MainAxisAlignment.CENTER, spacing=SPACING,
         )
 
-        self._btn_icon    = ft.Icon(ft.Icons.CAMERA_ALT, color=CLR_TEXT, size=18)
+        self._btn_icon    = ft.Icon(ft.Icons.CAMERA_ALT, color=CLR_ON_ACCENT, size=18)
         self._btn_label   = ft.Text(
             "  MARCAR ASISTENCIA", size=14,
-            weight=ft.FontWeight.BOLD, color=CLR_TEXT,
+            weight=ft.FontWeight.BOLD, color=CLR_ON_ACCENT,
             style=ft.TextStyle(letter_spacing=1.2),
         )
         self._btn_spinner = ft.ProgressRing(
-            width=18, height=18, stroke_width=3, color=CLR_TEXT, visible=False,
+            width=18, height=18, stroke_width=3, color=CLR_ON_ACCENT, visible=False,
         )
         self.btn_marcar = ft.Container(
             content=ft.Row(
@@ -1015,9 +1119,16 @@ class KioskApp:
             ink=True,
             shadow=ft.BoxShadow(
                 spread_radius=0, blur_radius=10,
-                color="#16A34A50", offset=ft.Offset(0, 3),
+                color=CLR_SHADOW_ENTER, offset=ft.Offset(0, 3),
             ),
         )
+
+        pinpad_shadow = None
+        if CLR_SHADOW_PANEL != "#00000000":
+            pinpad_shadow = ft.BoxShadow(
+                spread_radius=0, blur_radius=12,
+                color=CLR_SHADOW_PANEL, offset=ft.Offset(0, 2),
+            )
 
         return ft.Container(
             content=ft.Column(
@@ -1028,7 +1139,8 @@ class KioskApp:
             ),
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
             bgcolor=CLR_SURFACE, border_radius=18,
-            border=ft.Border.all(1, "#2D4060"),
+            border=ft.Border.all(1, CLR_BORDER),
+            shadow=pinpad_shadow,
             width=ui_width + 40,
         )
 
@@ -1066,9 +1178,9 @@ class KioskApp:
         self._camera.stop_stream()
         print(f"[CAM] Auto-apagado tras {CAMERA_IDLE_TIMEOUT}s sin interacción.")
         # Actualizar badge sin esperar al próximo tick de _camera_update_task
-        self._badge_dot.bgcolor  = "#64748B"
+        self._badge_dot.bgcolor  = CLR_CAM_IDLE
         self._badge_text.value   = "INACTIVA"
-        self._cam_border.border  = ft.Border.all(2, "#64748B")
+        self._cam_border.border  = ft.Border.all(2, CLR_BORDER)
         self.page.update()
 
     async def _camera_update_task(self) -> None:
@@ -1124,13 +1236,13 @@ class KioskApp:
                     self._cam_status.value   = f"⚠ {self._camera.error}"
                     self._cam_status.visible = True
                 elif state == "connecting":
-                    self._badge_dot.bgcolor  = "#F59E0B"
+                    self._badge_dot.bgcolor  = CLR_WARNING
                     self._badge_text.value   = "CONECTANDO"
-                    self._cam_border.border  = ft.Border.all(2, "#F59E0B")
+                    self._cam_border.border  = ft.Border.all(2, CLR_WARNING)
                 else:  # idle
-                    self._badge_dot.bgcolor  = "#64748B"
+                    self._badge_dot.bgcolor  = CLR_CAM_IDLE
                     self._badge_text.value   = "INACTIVA"
-                    self._cam_border.border  = ft.Border.all(2, "#64748B")
+                    self._cam_border.border  = ft.Border.all(2, CLR_BORDER)
                 # Solo en cambio de estado actualizamos el contenedor (badge + borde)
                 self._cam_border.update()
 
@@ -1260,7 +1372,7 @@ class KioskApp:
                 API_URL,
                 files={"foto": (foto_nombre, foto_bytes, "image/jpeg")},
                 data={"pin": pin, "pc": self.device_name},
-                timeout=(2, 5),
+                timeout=API_TIMEOUT_MARK,
             )
 
         biometric_rejected = False

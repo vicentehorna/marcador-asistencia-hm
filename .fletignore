@@ -7,12 +7,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
-# Archivos sensibles / locales
+# Archivos sensibles / locales (NO van al APK)
 .env
 *.log
 
+# app.env SÍ debe empaquetarse (tema, API, cámara). No listar aquí.
+
 # Artefactos de compilación
 build/
+build_old_*/
+_BORRAR_*/
 dist/
 *.apk
 *.aab

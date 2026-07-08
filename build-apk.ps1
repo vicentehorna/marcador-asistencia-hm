@@ -26,7 +26,20 @@ $env:ANDROID_SDK_ROOT = "D:\Android\sdk"
 $env:JAVA_HOME        = "D:\java\17.0.13+11"
 $env:PUB_CACHE        = "C:\PubCache"
 $env:PYTHONUTF8       = "1"
-$env:Path = "D:\flutter\3.41.4\bin;" + $env:Path
+$env:PYTHONIOENCODING = "utf-8"
+try { chcp 65001 | Out-Null } catch { }
+$env:Path = "D:\flutter\3.41.4\bin;D:\java\17.0.13+11\bin;" + (
+    ($env:Path -split ';' | Where-Object { $_ -and $_ -notmatch '\\flutter\\' }) -join ';'
+)
+
+# Certificados SSL (GitHub / plantillas Flet). pip-system-certs usa el almacén de Windows.
+$pyExe = "C:\PROYECTOS\MARCADOR\.venv\Scripts\python.exe"
+if (Test-Path $pyExe) {
+    try {
+        & $pyExe -m pip install pip-system-certs -q 2>$null | Out-Null
+        Write-Host "      pip-system-certs listo (SSL Windows)." -ForegroundColor Gray
+    } catch { }
+}
 
 function Stop-GradleDaemons {
     Write-Host "      Deteniendo daemons de Gradle antes de limpiar..." -ForegroundColor Gray
@@ -77,6 +90,9 @@ function Remove-FolderAggressive {
 Get-ChildItem -LiteralPath $PROJECT_DIR -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     ForEach-Object { Remove-FolderAggressive $_.FullName | Out-Null }
 
+Get-ChildItem -LiteralPath $PROJECT_DIR -Directory -Filter "build_old_*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-FolderAggressive $_.FullName | Out-Null }
+
 Remove-FolderAggressive (Join-Path $PROJECT_DIR "dist") | Out-Null
 if (-not (Remove-FolderAggressive (Join-Path $PROJECT_DIR "build"))) {
     Write-Host "      ERROR: No se pudo eliminar build\. Cierra IDE/terminals que la usen y reintenta." -ForegroundColor Red
@@ -113,8 +129,13 @@ Write-Host "      Init script de Gradle instalado en $GradleInitDir" -Foreground
 # NO usar --compile-packages ni --cleanup-packages: OpenCV (cv2) carga archivos .py del paquete
 # (p. ej. config.py) que desaparecen con esa opción → ImportError en el móvil.
 # Ver: https://github.com/flet-dev/flet/issues/4850
-& flet build apk --project MarcadorAsistencia --org com.tuempresa --arch arm64-v8a --yes `
-    --compile-app --cleanup-app
+$fletPy = "C:\PROYECTOS\MARCADOR\.venv\Scripts\python.exe"
+$launcher = Join-Path $PROJECT_DIR "build_apk_launcher.py"
+if (-not (Test-Path $fletPy)) { $fletPy = "python" }
+if (-not (Test-Path $launcher)) {
+    $launcher = Join-Path "C:\PROYECTOS\MARCADOR" "build_apk_launcher.py"
+}
+& $fletPy $launcher
 
 # 5. Localizar y Copiar el APK (Búsqueda Agresiva)
 Write-Host "[5/5] Buscando el archivo APK generado..." -ForegroundColor Yellow

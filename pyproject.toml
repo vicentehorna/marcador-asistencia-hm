@@ -20,7 +20,7 @@ permissions = ["camera"]
 # OpenCV (opencv-python) necesita .py del wheel (p. ej. cv2/config.py). Compilar site-packages
 # rompe el import en APK (Flet issue #4850).
 [tool.flet.compile]
-app = true
+app = false
 packages = false
 cleanup = true
 

@@ -70,6 +70,10 @@ _CONNECTION_STRING = (
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", r"C:\ASISTENCIA\FOTOS")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Columnas de RegistroAsistencia (hm_quimica usa RutaFoto; hm_atilio puede usar rutafoto)
+REGISTRO_COL_FOTO = os.getenv("REGISTRO_COL_FOTO", "RutaFoto")
+REGISTRO_COL_PC   = os.getenv("REGISTRO_COL_PC", "PC")
+
 # ─────────────────────────────────────────────────────────────
 # Biometría facial — facenet-pytorch (100 % PyTorch, sin tensorflow)
 # ─────────────────────────────────────────────────────────────
@@ -483,42 +487,46 @@ def marcar_asistencia(
             )
 
         # ── 4. Registrar asistencia ────────────────────────────────────
-        # Primero intenta el INSERT completo (con columnas biométricas).
-        # Si las columnas no existen aún, hace fallback al INSERT legacy.
-        try:
-            SQL_COMPLETO = """
+        col_foto = REGISTRO_COL_FOTO
+        col_pc   = REGISTRO_COL_PC
+        sql_completo = f"""
                 INSERT INTO RegistroAsistencia
-                    (IdTrabajador, Person, FechaHoraIngreso, rutafoto, PC,
+                    (IdTrabajador, Person, FechaHoraIngreso, {col_foto}, {col_pc},
                      xlastuser, xlastdate, Match_Score, Es_Impostor)
                 VALUES (?, ?, ?, ?, ?, 'admin', GETDATE(), ?, ?)
             """
+        sql_legacy = f"""
+                        INSERT INTO RegistroAsistencia
+                            (IdTrabajador, Person, FechaHoraIngreso, {col_foto}, {col_pc},
+                             xlastuser, xlastdate)
+                        VALUES (?, ?, ?, ?, ?, 'admin', GETDATE())
+                    """
+        try:
             cursor.execute(
-                SQL_COMPLETO,
+                sql_completo,
                 (1, person_id, ahora, nombre_archivo, pc_norm,
                  match_score, 1 if es_impostor else 0),
             )
         except pyodbc.Error as exc_full:
-            # Si el error es por columna inexistente, usa INSERT legacy
             err_str = str(exc_full).lower()
-            if "invalid column name" in err_str or "column" in err_str:
+            bio_cols_missing = (
+                "match_score" in err_str
+                or "es_impostor" in err_str
+            )
+            if bio_cols_missing:
                 logger.warning(
                     "Columnas biométricas no existen. Ejecutar ALTER TABLE. "
                     "Fallback a INSERT sin biometría."
                 )
                 try:
-                    SQL_LEGACY = """
-                        INSERT INTO RegistroAsistencia
-                            (IdTrabajador, Person, FechaHoraIngreso, rutafoto, PC,
-                             xlastuser, xlastdate)
-                        VALUES (?, ?, ?, ?, ?, 'admin', GETDATE())
-                    """
                     cursor.execute(
-                        SQL_LEGACY,
+                        sql_legacy,
                         (1, person_id, ahora, nombre_archivo, pc_norm),
                     )
                 except pyodbc.Error as exc_legacy:
                     conn.rollback()
                     _cleanup_foto(ruta_completa, nombre_archivo)
+                    logger.error("Error INSERT legacy RegistroAsistencia: %s", exc_legacy)
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="Error interno al registrar la asistencia.",

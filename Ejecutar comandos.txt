@@ -1,3 +1,17 @@
+# ─── GENERAR APK (carpeta liviana MARCADOR_APP ~84 MB) ─────────────────────
+# 1) Sincronizar código desde MARCADOR (no copia api.py ni .env)
+powershell -ExecutionPolicy Bypass -File C:\PROYECTOS\MARCADOR\sync-apk.ps1
+
+# 2) Compilar (usa venv de MARCADOR; APK en MARCADOR_APP\build\MARCADOR_APP.apk)
+cd C:\PROYECTOS\MARCADOR_APP
+$env:Path = "C:\PROYECTOS\MARCADOR\.venv\Scripts;" + $env:Path
+powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
+
+# Si falla "CERTIFICATE_VERIFY_FAILED" al descargar de GitHub:
+#   - Cierra antivirus/escáner SSL temporalmente, o usa otra red
+#   - O: pip install pip-system-certs  (en el .venv de MARCADOR) y reintenta
+# Si falla "No se pudo eliminar build": cierra el Explorador en esa carpeta y reintenta
+
 python -m uvicorn api:app --host 0.0.0.0 --port 8001 --reload
 
 Remove-Item -Recurse -Force "C:\PROYECTOS\MARCADOR\build" -ErrorAction SilentlyContinue
@@ -17,8 +31,9 @@ cd C:\PROYECTOS\MARCADOR_APP
 # Venv del proyecto original (aquí está Flet y las dependencias)
 & C:\PROYECTOS\MARCADOR\.venv\Scripts\Activate.ps1
 
-# Sincroniza assets (success.mp3, iconos, splash, etc.) desde el proyecto original.
-# Si no lo haces, faltarán recursos en el APK aunque la compilación tenga éxito.
+# Sincroniza código y config móvil ( .env NO entra al APK — usar app.env )
+Copy-Item -Force C:\PROYECTOS\MARCADOR\main.py C:\PROYECTOS\MARCADOR_APP\
+Copy-Item -Force C:\PROYECTOS\MARCADOR\app.env C:\PROYECTOS\MARCADOR_APP\
 Copy-Item -Recurse -Force C:\PROYECTOS\MARCADOR\assets C:\PROYECTOS\MARCADOR_APP\
 
 # Limpieza recomendada antes del build
